@@ -18,10 +18,13 @@ const { title } = Astro.props;
     <title>{title}</title>
   </head>
   <body>
+   <div>
+    <canvas class="cursor"></canvas>
     <GLBackground/>
     <main>
       <slot />
     </main>
     <Footer />
+   </div>
   </body>
 </html>
