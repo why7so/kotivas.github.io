@@ -26,5 +26,212 @@ const { title } = Astro.props;
       </main>
       <Footer />
     </div>
+    
+    <script>
+    const canvas = document.querySelector('.cursor-canvas');
+    const ctx = canvas.getContext('2d');
+    const baseRadius = 100;
+    const POINTS = 64;
+
+    let dpr = 1;
+    let mx = 0, my = 0;
+    let cx = 0, cy = 0;
+    let targetX = 0, targetY = 0;
+    let prevCx = 0, prevCy = 0;
+    let initialized = false;
+
+    let globalAccel = 0;
+    let prevSpeed = 0;
+    let moveAngle = 0;
+    let angleVelocity = 0;
+    let prevMoveAngle = 0;
+    let globalTime = 0;
+
+  class PointPhysics {
+    displacement = 0;
+    velocity = 0;
+    harmonicA = 0;
+    harmonicB = 0;
+    harmonicC = 0;
+    pressure = 0;
+    tension = 0;
+    ripplePhase = 0;
+    rippleDecay = 0;
+
+    constructor(baseAngle) {
+      this.baseAngle = baseAngle;
+    }
+  }
+
+  const points = Array.from(
+    { length: POINTS },
+    (_, i) => new PointPhysics((i / POINTS) * Math.PI * 2)
+  );
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+  }
+
+  function draw(timestamp) {
+    const dt = Math.min((timestamp - (globalTime || timestamp)) / 16.667, 3);
+    globalTime = timestamp;
+
+    targetX = mx;
+    targetY = my;
+
+    const followSpeed = 0.14;
+    cx += (targetX - cx) * followSpeed * dt;
+    cy += (targetY - cy) * followSpeed * dt;
+
+    if (!initialized) {
+      prevCx = cx;
+      prevCy = cy;
+      prevMoveAngle = Math.atan2(0, 0.001);
+      moveAngle = prevMoveAngle;
+      initialized = true;
+    }
+
+    const dvx = cx - prevCx;
+    const dvy = cy - prevCy;
+    prevCx = cx;
+    prevCy = cy;
+
+    const speed = Math.sqrt(dvx * dvx + dvy * dvy);
+    const rawAngle = Math.atan2(dvy, dvx);
+    const angleDiff = Math.atan2(
+      Math.sin(rawAngle - prevMoveAngle),
+      Math.cos(rawAngle - prevMoveAngle)
+    );
+    moveAngle += angleDiff * 0.3;
+    angleVelocity = angleDiff * 0.3;
+    prevMoveAngle = moveAngle;
+
+    globalAccel = speed - prevSpeed;
+    prevSpeed = speed;
+
+    const speedNorm = Math.min(speed / 6, 1);
+    const accelNorm = Math.min(Math.abs(globalAccel) / 3, 1);
+    const turnIntensity = Math.min(Math.abs(angleVelocity) / 0.3, 1);
+
+    for (const p of points) {
+      const angleToCenter = p.baseAngle - moveAngle;
+      const norm = Math.atan2(
+        Math.sin(angleToCenter),
+        Math.cos(angleToCenter)
+      );
+      const cosA = Math.cos(norm);
+      const sinA = Math.sin(norm);
+
+      const frontPush = cosA * speedNorm * 4 * (1 + globalAccel * 2);
+      const sideSqueeze =
+        Math.pow(Math.abs(sinA), 1.5) * speedNorm * 2.5;
+      const backPull = -cosA * speedNorm * 1.5;
+      const coreForce = frontPush - sideSqueeze + backPull;
+
+      const h1 = Math.sin(p.baseAngle * 2 - moveAngle + globalTime * 0.004) *
+        speedNorm * 1.2;
+      const h2 = Math.sin(p.baseAngle * 5 - moveAngle * 2 + globalTime * 0.009) *
+        speedNorm * 0.8 * turnIntensity;
+      const h3 =
+        Math.sin(p.baseAngle * 3 + moveAngle + globalTime * 0.006) *
+        accelNorm * 2;
+      const h4 =
+        Math.sin(p.baseAngle * 7 - globalTime * 0.012) *
+        speedNorm * 0.5;
+
+      const harmonic = h1 + h2 + h3 + h4;
+
+      if (speed > 0.3) {
+        p.ripplePhase = p.baseAngle * 4 - moveAngle;
+        p.rippleDecay = Math.min(p.rippleDecay + speed * 0.08, 1);
+      }
+      const ripple =
+        Math.sin(p.ripplePhase + globalTime * 0.008) *
+        p.rippleDecay *
+        speedNorm *
+        1;
+      p.rippleDecay *= 0.985;
+
+      const pressureForce = globalAccel * cosA * 2.5;
+
+      const sideWave =
+        Math.sin(p.baseAngle * 6 + globalTime * 0.007) * speedNorm * 0.7;
+
+      const targetDisp =
+        coreForce + harmonic + ripple + pressureForce + sideWave;
+
+      const stiffness = 0.08;
+      const damping = 0.82;
+      const springForce = (targetDisp - p.displacement) * stiffness;
+      p.velocity = (p.velocity + springForce * dt) * Math.pow(damping, dt);
+      p.displacement += p.velocity * dt;
+
+      const tForce = (targetDisp * 0.1 - p.tension) * 0.05;
+      p.tension += tForce * dt;
+    }
+
+    for (let i = 0; i < POINTS; i++) {
+      const curr = points[i];
+      const next = points[(i + 1) % POINTS];
+      const prev = points[(i - 1 + POINTS) % POINTS];
+      const avgNeighbor = (prev.displacement + next.displacement) * 0.5;
+      const surfaceTension = (avgNeighbor - curr.displacement) * 0.15;
+      curr.velocity += surfaceTension * dt;
+    }
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+
+    ctx.beginPath();
+    for (let i = 0; i <= POINTS; i++) {
+      const idx = i % POINTS;
+      const p = points[idx];
+      const r = baseRadius + p.displacement;
+      const x = Math.cos(p.baseAngle) * r;
+      const y = Math.sin(p.baseAngle) * r;
+
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        const prev = points[(idx - 1 + POINTS) % POINTS];
+        const prevR = baseRadius + prev.displacement;
+        const prevX = Math.cos(prev.baseAngle) * prevR;
+        const prevY = Math.sin(prev.baseAngle) * prevR;
+
+        const cpDist = (4 / 3) * Math.tan(Math.PI / (2 * POINTS));
+        const cp1x = prevX - Math.sin(prev.baseAngle) * prevR * cpDist;
+        const cp1y = prevY + Math.cos(prev.baseAngle) * prevR * cpDist;
+        const cp2x = x + Math.sin(p.baseAngle) * r * cpDist;
+        const cp2y = y - Math.cos(p.baseAngle) * r * cpDist;
+
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y);
+      }
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    ctx.restore();
+
+    requestAnimationFrame(draw);
+  }
+
+  function onMouse(e) {
+    mx = e.clientX;
+    my = e.clientY;
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  document.addEventListener('mousemove', onMouse);
+  requestAnimationFrame(draw);
+    </script>
   </body>
 </html>
